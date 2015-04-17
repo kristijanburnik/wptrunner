@@ -7,19 +7,20 @@ from .webdriver import ChromedriverLocalServer
 from ..executors import executor_kwargs as base_executor_kwargs
 from ..executors.executorselenium import (SeleniumTestharnessExecutor,
                                           SeleniumRefTestExecutor)
-
+from ..environment import LocalServerEnvironment
 
 __wptrunner__ = {"product": "chrome",
                  "check_args": "check_args",
                  "browser": "ChromeBrowser",
                  "executor": {"testharness": "SeleniumTestharnessExecutor",
                               "reftest": "SeleniumRefTestExecutor"},
+                 "env": "LocalServerEnvironment",
                  "browser_kwargs": "browser_kwargs",
                  "executor_kwargs": "executor_kwargs",
                  "env_options": "env_options"}
 
 
-def check_args(**kwargs):
+def check_args(kwargs):
     require_arg(kwargs, "binary")
 
 
