@@ -69,7 +69,7 @@ class ServoWebDriverProtocol(Protocol):
             # Get a simple property over the connection
             self.session.window_handle
         # TODO what exception?
-        except (socket.timeout, webdriver.TimeoutException):
+        except (socket.timeout, webdriver.TimeoutException, IOError):
             return False
         return True
 
@@ -77,17 +77,18 @@ class ServoWebDriverProtocol(Protocol):
         pass
 
     def wait(self):
-        # This won't actually work yet
-        return
+        # This is very stupid
         while True:
-            try:
-                pass
-            except IOError:
+            if not self.is_alive():
                 break
-            except Exception as e:
-                self.logger.error(traceback.format_exc(e))
-                break
+            time.sleep(1)
 
+def timeout_func(timeout):
+    if timeout:
+        t0 = time.time()
+        return lambda: time.time() - t0 > timeout + extra_timeout
+    else:
+        return lambda: False
 
 class ServoWebDriverTestharnessExecutor(TestharnessExecutor):
     def __init__(self, browser, server_config, timeout_multiplier=1,
@@ -103,13 +104,14 @@ class ServoWebDriverTestharnessExecutor(TestharnessExecutor):
     def do_test(self, test):
         url = self.test_url(test)
         session = self.protocol.session
-        timeout = test.timeout * self.timeout_multiplier
+        timeout = test.timeout * self.timeout_multiplier if self.debug_info is None else None
 
-        t0 = time.time()
+        timed_out = timeout_func(timeout)
+
         try:
-            time.sleep(0.1)
+            # Without this pause I get a panic in the webdriver server
             session.get(url)
-            while time.time() - t0 <= timeout + extra_timeout:
+            while not timed_out():
                 data = session.execute_script("""
     var elem = document.getElementById('__testharness__results__');
     if (elem === null) {
@@ -164,6 +166,7 @@ class ServoWebDriverRefTestExecutor(RefTestExecutor):
     def do_test(self, test):
         try:
             result = self.implementation.run_test(test)
+            return self.convert_result(test, result)
         except IOError:
             return test.result_cls("CRASH", None), []
         except TimeoutError:
@@ -173,23 +176,22 @@ class ServoWebDriverRefTestExecutor(RefTestExecutor):
             if message:
                 message += "\n"
             message += traceback.format_exc(e)
-            result = test.result_cls("ERROR", message), []
-
-        return self.convert_result(test, result)
+            return test.result_cls("ERROR", message), []
 
     def screenshot(self, test):
         url = self.test_url(test)
         session = self.protocol.session
 
-        webdriver.get(url)
+        timeout = test.timeout * self.timeout_multiplier if self.debug_info is None else None
 
-        t0 = time.time()
+        timed_out = timeout_func(timeout)
+
         session.get(url)
-        while time.time() - t0 <= timeout + extra_timeout:
+        while not timed_out():
             ready = session.execute_script("""return (document.readyState === 'complete' && Array.prototype.indexOf.call(document.body.classList, 'reftest-wait') === -1)""")
             if ready:
-                return session.screenshot()
-                break
+                self.logger.debug("Taking screenshot of %s" % url)
+                return True, session.screenshot()
             time.sleep(0.1)
 
-        raise TimeoutError()
+        raise False, ("TIMEOUT", None)

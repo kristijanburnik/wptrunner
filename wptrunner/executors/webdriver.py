@@ -103,9 +103,11 @@ class UnsupportedOperationException(WebDriverException):
     http_status = 500
     status_code = "unsupported operation"
 
+_objs = locals().values()
+
 def group_exceptions():
     exceptions = defaultdict(dict)
-    for item in locals():
+    for item in _objs:
         if type(item) == type and issubclass(item, WebDriverException):
             if not isinstance(item.http_status, tuple):
                 statuses = (item.http_status,)
@@ -117,6 +119,8 @@ def group_exceptions():
     return exceptions
 
 _exceptions = group_exceptions()
+del _objs
+del group_exceptions
 
 def wait_for_port(host, port, timeout=60):
     """ Wait for the specified Marionette host/port to be available."""
@@ -194,6 +198,9 @@ class Transport(object):
             raise WebDriverException("Could not parse response body as JSON: %s" % body)
 
         if resp.status != 200:
+            print resp.status, data
+            print _exceptions.get(resp.status, {})
+            print _exceptions.get(resp.status, {}).get(data.get("status", None), WebDriverException)
             cls = _exceptions.get(resp.status, {}).get(data.get("status", None), WebDriverException)
             raise cls(data.get("message", "No error message given"))
 
