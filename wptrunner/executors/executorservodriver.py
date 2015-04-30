@@ -77,11 +77,60 @@ class ServoWebDriverProtocol(Protocol):
         pass
 
     def wait(self):
-        # This is very stupid
         while True:
-            if not self.is_alive():
+            try:
+                self.session.execute_async_script("");
+            except webdriver.TimeoutException:
+                pass
+            except (socket.timeout, IOError):
                 break
-            time.sleep(1)
+            except Exception as e:
+                self.logger.error(traceback.format_exc(e))
+                break
+
+class ServoWebDriverRun(object):
+    def __init__(self, func, session, url, timeout):
+        self.func = func
+        self.result = None
+        self.session = session
+        self.url = url
+        self.timeout = timeout
+        self.result_flag = threading.Event()
+
+    def run(self):
+        timeout = self.timeout
+
+        try:
+            self.session.timeouts.script = timeout + extra_timeout
+        except IOError:
+            self.logger.error("Lost webdriver connection")
+            return Stop
+
+        executor = threading.Thread(target=self._run)
+        executor.start()
+
+        flag = self.result_flag.wait(timeout + 2 * extra_timeout)
+        if self.result is None:
+            assert not flag
+            self.result = False, ("EXTERNAL-TIMEOUT", None)
+
+        return self.result
+
+    def _run(self):
+        try:
+            self.result = True, self.func(self.session, self.url, self.timeout)
+        except webdriver.TimeoutException:
+            self.result = False, ("EXTERNAL-TIMEOUT", None)
+        except (socket.timeout, IOError):
+            self.result = False, ("CRASH", None)
+        except Exception as e:
+            message = getattr(e, "message", "")
+            if message:
+                message += "\n"
+            message += traceback.format_exc(e)
+            self.result = False, ("ERROR", e)
+        finally:
+            self.result_flag.set()
 
 def timeout_func(timeout):
     if timeout:
@@ -96,7 +145,8 @@ class ServoWebDriverTestharnessExecutor(TestharnessExecutor):
         TestharnessExecutor.__init__(self, browser, server_config, timeout_multiplier=1,
                                      debug_info=None)
         self.protocol = ServoWebDriverProtocol(self, browser, capabilities=capabilities)
-        self.script = None
+        with open(os.path.join(here, "testharness_servodriver.js")) as f:
+            self.script = f.read()
 
     def on_protocol_change(self, new_protocol):
         pass
@@ -109,19 +159,8 @@ class ServoWebDriverTestharnessExecutor(TestharnessExecutor):
         timed_out = timeout_func(timeout)
 
         try:
-            # Without this pause I get a panic in the webdriver server
             session.get(url)
-            while not timed_out():
-                data = session.execute_script("""
-    var elem = document.getElementById('__testharness__results__');
-    if (elem === null) {
-       return null;
-    } else {
-       return elem.textContent;
-    }""")
-                if data is not None:
-                    break
-                time.sleep(0.1)
+            data = session.execute_async_script(self.script)
         except IOError:
             return test.result_cls("CRASH", None), []
         except Exception as e:
@@ -142,6 +181,31 @@ class ServoWebDriverTestharnessExecutor(TestharnessExecutor):
     def is_alive(self):
         return self.protocol.is_alive()
 
+    def do_test(self, test):
+        url = self.test_url(test)
+
+        success, data = ServoWebDriverRun(self.do_testharness,
+                                          self.protocol.session,
+                                          url,
+                                          test.timeout * self.timeout_multiplier).run()
+
+        if success:
+            return self.convert_result(test, data)
+
+        return (test.result_cls(*data), [])
+
+    def do_testharness(self, session, url, timeout):
+        session.get(url)
+        result = json.loads(
+            session.execute_async_script(
+                self.script % {"abs_url": url,
+                               "url": strip_server(url),
+                               "timeout_multiplier": self.timeout_multiplier,
+                               "timeout": timeout * 1000}))
+        if "test" not in result:
+            result["test"] = strip_server(url)
+        return result
+
 class TimeoutError(Exception):
     pass
 
@@ -159,6 +223,9 @@ class ServoWebDriverRefTestExecutor(RefTestExecutor):
         self.protocol = ServoWebDriverProtocol(self, browser,
                                                capabilities=capabilities)
         self.implementation = RefTestImplementation(self)
+
+        with open(os.path.join(here, "reftest-wait_servodriver.js")) as f:
+            self.wait_script = f.read()
 
     def is_alive(self):
         return self.protocol.is_alive()
@@ -179,19 +246,14 @@ class ServoWebDriverRefTestExecutor(RefTestExecutor):
             return test.result_cls("ERROR", message), []
 
     def screenshot(self, test):
-        url = self.test_url(test)
-        session = self.protocol.session
-
         timeout = test.timeout * self.timeout_multiplier if self.debug_info is None else None
+        return ServoWebDriverRun(self._screenshot,
+                                 self.protocol.session,
+                                 self.test_url(test),
+                                 timeout).run()
 
-        timed_out = timeout_func(timeout)
 
+    def _screenshot(self, session, url, timeout):
         session.get(url)
-        while not timed_out():
-            ready = session.execute_script("""return (document.readyState === 'complete' && Array.prototype.indexOf.call(document.body.classList, 'reftest-wait') === -1)""")
-            if ready:
-                self.logger.debug("Taking screenshot of %s" % url)
-                return True, session.screenshot()
-            time.sleep(0.1)
-
-        raise False, ("TIMEOUT", None)
+        session.execute_async_script(self.wait_script)
+        return session.screenshot()

@@ -223,11 +223,51 @@ def command(func):
 
     return inner
 
+class Timeouts(object):
+    def __init__(self, session):
+        self.session = session
+        self._script = 30
+        self._load = 0
+        self._implicit_wait = 0
+
+    def _set_timeouts(self, name, value):
+        body = {"type": name,
+                "ms": value * 1000}
+        return self.session.send_command("POST", "timeouts", body)
+
+    @property
+    def script(self):
+        return self._script
+
+    @script.setter
+    def script(self, value):
+        self._set_timeouts("script", value)
+        self._script = value
+
+    @property
+    def load(self):
+        return self._load
+
+    @load.setter
+    def set_load(self, value):
+        self._set_timeouts("page load", value)
+        self._script = value
+
+    @property
+    def implicit_wait(self):
+        return self._implicit_wait
+
+    @implicit_wait.setter
+    def implicit_wait(self, value):
+        self._set_timeouts("implicit wait", value)
+        self._implicit_wait = value
+
 class Session(object):
     def __init__(self, host, port, url_prefix="", desired_capabilities=None, port_timeout=60):
         self.transport = Transport(host, port, url_prefix, port_timeout)
         self.desired_capabilities = desired_capabilities
         self.session_id = None
+        self.timeouts = None
 
     def start(self):
         desired_capabilities = self.desired_capabilities if self.desired_capabilities else {}
@@ -236,6 +276,8 @@ class Session(object):
         rv = self.transport.send("POST", "session")
         self.session_id = rv["sessionId"]
 
+        self.timeouts = Timeouts(self)
+
         return rv["value"]
 
     @command
@@ -243,6 +285,7 @@ class Session(object):
         url = "session/%s" % self.session_id
         self.trasnport.send("DELETE", url)
         self.session_id = None
+        self.timeouts = None
         self.transport.close_connection()
 
     def __enter__(self):
