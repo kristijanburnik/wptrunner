@@ -362,6 +362,17 @@ class Session(object):
         }
         return self.send_command("POST", "execute", body, key="value")
 
+    @command
+    def execute_async_script(self, script, args=None):
+        if args is None:
+            args = []
+
+        body = {
+            "script": script,
+            "args": args
+        }
+        return self.send_command("POST", "execute_async", body, key="value")
+
     #[...]
 
     @command
